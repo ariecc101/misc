@@ -34,7 +34,7 @@ RESET="\033[0m"
 echo "Searching for files with matching SHA1 checksums in $directory_to_search..."
 find "$directory_to_search" -type f -exec sha1sum {} + | while read -r file_checksum file_path; do
     if [[ -n "${checksums[$file_checksum]}" ]]; then
-        echo -e "${GREEN}File with matching SHA1 checksum found:${RESET} $file_path"
+        echo -e "${GREEN}File with matching SHA1 checksum found: $file_path${RESET}"
         if [ "$disable_file_mode" == "disable_file" ]; then
             secure_file "$file_path"
         fi
