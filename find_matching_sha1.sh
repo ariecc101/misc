@@ -21,16 +21,20 @@ done < "$checksum_list"
 # Function to change permissions and ownership
 secure_file() {
     file=$1
-    chmod -v 000 "$file"
-    chown -v root:root "$file"
-    #echo "Secured file: $file"
+    chmod 000 "$file"
+    chown root:root "$file"
+    echo "Secured file: $file"
 }
+
+# ANSI color codes for green and bold
+GREEN="\033[1;32m"
+RESET="\033[0m"
 
 # Find and list all files with matching SHA1 checksums, and optionally secure them
 echo "Searching for files with matching SHA1 checksums in $directory_to_search..."
 find "$directory_to_search" -type f -exec sha1sum {} + | while read -r file_checksum file_path; do
     if [[ -n "${checksums[$file_checksum]}" ]]; then
-        echo "File with matching SHA1 checksum found: $file_path"
+        echo -e "${GREEN}File with matching SHA1 checksum found:${RESET} $file_path"
         if [ "$disable_file_mode" == "disable_file" ]; then
             secure_file "$file_path"
         fi
