@@ -21,9 +21,9 @@ done < "$checksum_list"
 # Function to change permissions and ownership
 secure_file() {
     file=$1
-    chmod 000 "$file"
-    chown root:root "$file"
-    echo "Secured file: $file"
+    chmod -v 000 "$file"
+    chown -v root:root "$file"
+    #echo "Secured file: $file"
 }
 
 # Find and list all files with matching SHA1 checksums, and optionally secure them
