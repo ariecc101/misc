@@ -1,4 +1,12 @@
 #!/bin/bash
+
+# Check if the directory argument is supplied
+if [ -z "$1" ]; then
+  echo "Usage: $0 /path/to/directory"
+  exit 1
+fi
+
+cd $1
 chmod 755 awstats
 chmod 755 bin
 chmod 750 cgi-bin
