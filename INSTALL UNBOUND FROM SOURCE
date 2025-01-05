@@ -1,0 +1,90 @@
+groupadd -g 304 unbound
+useradd -r -u 304 -g unbound -d /etc/unbound/ -s /sbin/nologin -c 'Unbound DNS resolver' unbound
+
+dnf install -y epel-release wget python
+dnf group install "Development Tools" -y
+
+dnf --enablerepo=crb install -y swig libnghttp2-devel
+dnf install -y python-devel libevent-devel expat-devel libsodium-devel
+
+cd /usr/local/src
+wget https://www.nlnetlabs.nl/downloads/unbound/unbound-1.22.0.tar.gz
+tar xzf unbound-1.22.0.tar.gz
+cd unbound-1.22.0
+
+./configure \
+  --prefix=/usr \
+  --libdir=/usr/lib64 \
+  --sysconfdir=/etc \
+  --localstatedir=/var \
+  --mandir=/usr/man \
+  --docdir=/usr/doc/unbound-1.22.0 \
+  --with-libevent \
+  --with-ssl \
+  --enable-dnscrypt \
+  --disable-static \
+  --enable-sha2 \
+  --enable-subnet \
+  --with-pythonmodule \
+  --with-pyunbound \
+  --with-libnghttp2 \
+  --with-username=unbound \
+  --with-pidfile=/run/unbound/unbound.pid \
+  --with-rootkey-file=/var/lib/unbound/root.key \
+  --build=x86_64-linux \
+  --host=x86_64-linux
+
+make
+make install
+
+cd /etc/unbound
+unbound-control-setup
+wget -O /etc/unbound/named.cache https://www.internic.net/domain/named.cache
+
+mkdir -p /run/unbound
+chmod 755 /run/unbound
+unbound-checkconf
+
+vi /usr/lib/systemd/system/unbound.service
+  [Unit]
+  Description=Unbound DNS server
+  Documentation=man:unbound(8)
+  After=network.target
+  Before=nss-lookup.target
+  Wants=nss-lookup.target
+
+  [Service]
+  Type=simple
+  Restart=on-failure
+  EnvironmentFile=-/etc/unbound
+  ExecStart=/usr/sbin/unbound -d -p $DAEMON_OPTS
+  ExecReload=+/bin/kill -HUP $MAINPID
+
+  [Install]
+  WantedBy=multi-user.target
+
+systemctl enable --now unbound
+
+journalctl -fu unbound
+systemctl status unbound
+
+
+dnf config-manager --add-repo https://pkg.cloudflare.com/cloudflared-ascii.repo
+dnf install -y cloudflared
+
+vi /etc/systemd/system/cloudflared.service
+  [Unit]
+  Description=Cloudflared DoH Service
+  After=network.target
+
+  [Service]
+  #ExecStart=/usr/local/bin/cloudflared proxy-dns --port 5053 --address 127.0.0.1
+  ExecStart=/usr/local/bin/cloudflared proxy-dns --port 5053 --upstream https://dns.google/dns-query
+  Restart=on-failure
+
+  [Install]
+  WantedBy=multi-user.target
+
+systemctl daemon-reload
+systemctl enable --now cloudflared
+systemctl status cloudflared
