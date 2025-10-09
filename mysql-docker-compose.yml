@@ -1,0 +1,15 @@
+services:
+  mariadb:
+    image: mysql:8.0.42
+    container_name: mariadb
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: abcdef
+    volumes:
+      - ./data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    command: >
+      --max_allowed_packet=256M
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
