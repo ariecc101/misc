@@ -3,7 +3,7 @@
 # Script: remove_old_php.sh
 # Deskripsi: Menghapus paket PHP versi lama (PHP 5.x s/d 8.1) pada sistem RedHat dan Debian/Ubuntu,
 #            serta memastikan base PHP sistem default (/bin/php) beralih ke minimal PHP 8.2.
-#            Mendukung opsi --dry-run untuk simulasi aman.
+#            Mendukung opsi --dry-run dan penanganan lock apt/dpkg otomatis.
 #
 
 set -uo pipefail
@@ -85,6 +85,48 @@ if [ -z "$OS_FAMILY" ]; then
     exit 1
 fi
 
+# Fungsi menunggu lock APT / DPKG di Debian/Ubuntu
+wait_for_apt_lock() {
+    local max_wait=180
+    local waited=0
+    local lock_files=("/var/lib/dpkg/lock-frontend" "/var/lib/dpkg/lock" "/var/lib/apt/lists/lock")
+    
+    while true; do
+        local is_locked=false
+        local lock_pids=""
+
+        for lf in "${lock_files[@]}"; do
+            if [ -f "$lf" ]; then
+                local p=""
+                if command -v fuser &>/dev/null; then
+                    p=$(fuser "$lf" 2>/dev/null || true)
+                elif command -v lsof &>/dev/null; then
+                    p=$(lsof -t "$lf" 2>/dev/null || true)
+                fi
+                if [ -n "$p" ]; then
+                    is_locked=true
+                    lock_pids="$lock_pids $p"
+                fi
+            fi
+        done
+
+        if [ "$is_locked" = false ]; then
+            break
+        fi
+
+        echo -e "${YELLOW}[!] APT/dpkg sedang dikunci proses lain (PID:${lock_pids}). Menunggu... (${waited}s / ${max_wait}s)${NC}"
+        sleep 3
+        waited=$((waited + 3))
+
+        if [ $waited -ge $max_wait ]; then
+            echo -e "${RED}[ERROR] Timeout menunggu lock APT dilepas oleh proses PID:${lock_pids}.${NC}"
+            echo -e "${YELLOW}[TIPS] Anda bisa mengecek proses dengan: ps -fp${lock_pids}${NC}"
+            return 1
+        fi
+    done
+    return 0
+}
+
 echo -e "${CYAN}============================================================${NC}"
 echo -e "${CYAN} Pembersihan Versi PHP Lama & Pengaturan PHP 8.2 Default${NC}"
 echo -e " Sistem Operasi : ${BOLD}${PRETTY_NAME:-$OS_FAMILY}${NC} (Kategori: ${BOLD}$OS_FAMILY${NC})"
@@ -131,17 +173,14 @@ echo -e "${BLUE}[*] Memeriksa paket dan service yang terpasang...${NC}"
 
 if [ "$OS_FAMILY" = "redhat" ]; then
     for ver in "${RHEL_VERSIONS[@]}"; do
-        # Cari paket rpm yang terpasang
         while IFS= read -r pkg; do
             [ -n "$pkg" ] && INSTALLED_PACKAGES+=("$pkg")
         done < <(rpm -qa | grep -E "^${ver}(-|$)" || true)
 
-        # Cek systemd service
         if systemctl list-unit-files "${ver}-php-fpm.service" &>/dev/null; then
             SERVICES_TO_STOP+=("${ver}-php-fpm.service")
         fi
 
-        # Cek direktori konfigurasi
         [ -d "/etc/opt/remi/${ver}" ] && DIRS_TO_CLEAN+=("/etc/opt/remi/${ver}")
         [ -d "/var/opt/remi/${ver}" ] && DIRS_TO_CLEAN+=("/var/opt/remi/${ver}")
         [ -d "/opt/remi/${ver}" ] && DIRS_TO_CLEAN+=("/opt/remi/${ver}")
@@ -149,17 +188,14 @@ if [ "$OS_FAMILY" = "redhat" ]; then
 
 elif [ "$OS_FAMILY" = "debian" ]; then
     for ver in "${DEB_VERSIONS[@]}"; do
-        # Cari paket dpkg yang terpasang
         while IFS= read -r pkg; do
             [ -n "$pkg" ] && INSTALLED_PACKAGES+=("$pkg")
         done < <(dpkg-query -W -f='${binary:Package} ${Status}\n' "php${ver}*" 2>/dev/null | awk '/install ok installed/{print $1}' || true)
 
-        # Cek systemd service
         if systemctl list-unit-files "php${ver}-fpm.service" &>/dev/null; then
             SERVICES_TO_STOP+=("php${ver}-fpm.service")
         fi
 
-        # Cek direktori konfigurasi
         [ -d "/etc/php/${ver}" ] && DIRS_TO_CLEAN+=("/etc/php/${ver}")
         [ -d "/var/log/php${ver}-fpm" ] && DIRS_TO_CLEAN+=("/var/log/php${ver}-fpm")
     done
@@ -241,9 +277,17 @@ if [ "$NEED_BASE_UPGRADE" = true ]; then
             dnf update -y "php*" || dnf distro-sync -y --allowerasing
         fi
     elif [ "$OS_FAMILY" = "debian" ]; then
-        echo "    Memastikan paket php8.2 terpasang..."
-        apt-get update -y
-        apt-get install -y php8.2 php8.2-cli php8.2-fpm php8.2-common
+        export DEBIAN_FRONTEND=noninteractive
+        APT_LOCK_OPTS=("-o" "DPkg::Lock::Timeout=180" "-o" "Dpkg::Options::=--force-confdef" "-o" "Dpkg::Options::=--force-confold")
+        
+        wait_for_apt_lock
+        echo "    Memastikan repositori apt diperbarui..."
+        apt-get "${APT_LOCK_OPTS[@]}" update -y || true
+
+        wait_for_apt_lock
+        echo "    Memasang runtime php8.2 jika belum lengkap..."
+        apt-get "${APT_LOCK_OPTS[@]}" install -y php8.2 php8.2-cli php8.2-fpm php8.2-common
+
         if command -v update-alternatives &>/dev/null; then
             echo "    Mengatur update-alternatives ke php8.2..."
             update-alternatives --set php /usr/bin/php8.2 2>/dev/null || true
@@ -262,11 +306,28 @@ if [ ${#INSTALLED_PACKAGES[@]} -gt 0 ]; then
     if [ "$OS_FAMILY" = "redhat" ]; then
         PKG_MGR="dnf"
         command -v dnf &>/dev/null || PKG_MGR="yum"
-        $PKG_MGR remove -y "${INSTALLED_PACKAGES[@]}"
+        if ! $PKG_MGR remove -y "${INSTALLED_PACKAGES[@]}"; then
+            echo -e "${RED}[ERROR] Gagal menghapus paket PHP via $PKG_MGR.${NC}"
+            exit 1
+        fi
     elif [ "$OS_FAMILY" = "debian" ]; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get purge -y "${INSTALLED_PACKAGES[@]}"
-        apt-get autoremove -y
+        APT_LOCK_OPTS=("-o" "DPkg::Lock::Timeout=180" "-o" "Dpkg::Options::=--force-confdef" "-o" "Dpkg::Options::=--force-confold")
+        
+        wait_for_apt_lock
+        echo "    Menjalankan apt-get purge..."
+        if ! apt-get "${APT_LOCK_OPTS[@]}" purge -y "${INSTALLED_PACKAGES[@]}"; then
+            echo -e "${RED}[ERROR] Gagal menjalankan apt-get purge. Mencoba memulihkan status dpkg...${NC}"
+            dpkg --configure -a || true
+            wait_for_apt_lock
+            apt-get "${APT_LOCK_OPTS[@]}" purge -y "${INSTALLED_PACKAGES[@]}" || {
+                echo -e "${RED}[FATAL] Gagal menghapus paket PHP lama via apt-get.${NC}"
+                exit 1
+            }
+        fi
+
+        wait_for_apt_lock
+        apt-get "${APT_LOCK_OPTS[@]}" autoremove -y || true
     fi
 fi
 
