@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
 # Script: remove_old_php.sh
-# Deskripsi: Menghapus paket PHP versi lama (PHP 5.x s/d 8.1) pada sistem RedHat dan Debian/Ubuntu.
+# Deskripsi: Menghapus paket PHP versi lama (PHP 5.x s/d 8.1) pada sistem RedHat dan Debian/Ubuntu,
+#            serta memastikan base PHP sistem default (/bin/php) beralih ke minimal PHP 8.2.
 #            Mendukung opsi --dry-run untuk simulasi aman.
 #
 
@@ -23,11 +24,11 @@ usage() {
     echo -e "${BOLD}Penggunaan:${NC} $0 [OPTIONS]"
     echo ""
     echo "Options:"
-    echo "  -d, --dry-run     Mode simulasi (menampilkan paket/service yang akan dihapus tanpa mengeksekusi)"
+    echo "  -d, --dry-run     Mode simulasi (menampilkan aksi yang akan dilakukan tanpa eksekusi)"
     echo "  -y, --yes         Lewati konfirmasi interaktif saat eksekusi langsung"
     echo "  -h, --help        Tampilkan bantuan ini"
     echo ""
-    echo -e "${YELLOW}Catatan: Script ini HANYA menargetkan PHP 5.4 - 8.1. PHP >= 8.2 tidak akan disentuh.${NC}"
+    echo -e "${YELLOW}Catatan: Script ini menargetkan PHP 5.4 - 8.1 dan memastikan default sistem menggunakan PHP 8.2.${NC}"
     exit 0
 }
 
@@ -85,16 +86,40 @@ if [ -z "$OS_FAMILY" ]; then
 fi
 
 echo -e "${CYAN}============================================================${NC}"
-echo -e "${CYAN} Pembersihan Versi PHP Lama (5.x s/d 8.1)${NC}"
+echo -e "${CYAN} Pembersihan Versi PHP Lama & Pengaturan PHP 8.2 Default${NC}"
 echo -e " Sistem Operasi : ${BOLD}${PRETTY_NAME:-$OS_FAMILY}${NC} (Kategori: ${BOLD}$OS_FAMILY${NC})"
 if [ "$DRY_RUN" = true ]; then
-    echo -e " Mode Operasi   : ${YELLOW}${BOLD}DRY RUN (Simulasi - Tanpa Menghapus Apapun)${NC}"
+    echo -e " Mode Operasi   : ${YELLOW}${BOLD}DRY RUN (Simulasi - Tanpa Menghapus/Mengubah Apapun)${NC}"
 else
-    echo -e " Mode Operasi   : ${RED}${BOLD}EKSEKUSI PENGHAPUSAN LANGSUNG${NC}"
+    echo -e " Mode Operasi   : ${RED}${BOLD}EKSEKUSI LANGSUNG${NC}"
 fi
 echo -e "${CYAN}============================================================${NC}"
 
-# Target versi PHP yang akan dihapus: 5.4 s/d 8.1
+# 1. Cek Versi PHP Default Sistem Saat Ini (/bin/php)
+CURRENT_BASE_PHP=""
+if command -v php &>/dev/null; then
+    CURRENT_BASE_PHP=$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || true)
+fi
+
+NEED_BASE_UPGRADE=false
+if [ -n "$CURRENT_BASE_PHP" ]; then
+    IS_OLD=$(awk -v ver="$CURRENT_BASE_PHP" 'BEGIN {
+        if (ver ~ /^[0-9]+(\.[0-9]+)?$/) {
+            split(ver, a, ".")
+            maj = a[1] + 0; min = a[2] + 0
+            if (maj < 8 || (maj == 8 && min < 2)) {
+                print "yes"
+                exit
+            }
+        }
+        print "no"
+    }')
+    if [ "$IS_OLD" = "yes" ]; then
+        NEED_BASE_UPGRADE=true
+    fi
+fi
+
+# 2. Target versi PHP lama multi-version (5.4 s/d 8.1)
 RHEL_VERSIONS=("php54" "php55" "php56" "php70" "php71" "php72" "php73" "php74" "php80" "php81")
 DEB_VERSIONS=("5.4" "5.5" "5.6" "7.0" "7.1" "7.2" "7.3" "7.4" "8.0" "8.1")
 
@@ -105,7 +130,6 @@ DIRS_TO_CLEAN=()
 echo -e "${BLUE}[*] Memeriksa paket dan service yang terpasang...${NC}"
 
 if [ "$OS_FAMILY" = "redhat" ]; then
-    # Cari package Remi / SCL
     for ver in "${RHEL_VERSIONS[@]}"; do
         # Cari paket rpm yang terpasang
         while IFS= read -r pkg; do
@@ -124,7 +148,6 @@ if [ "$OS_FAMILY" = "redhat" ]; then
     done
 
 elif [ "$OS_FAMILY" = "debian" ]; then
-    # Cari package Sury / Debian
     for ver in "${DEB_VERSIONS[@]}"; do
         # Cari paket dpkg yang terpasang
         while IFS= read -r pkg; do
@@ -142,32 +165,39 @@ elif [ "$OS_FAMILY" = "debian" ]; then
     done
 fi
 
-# Tampilkan hasil deteksi
-if [ ${#INSTALLED_PACKAGES[@]} -eq 0 ] && [ ${#SERVICES_TO_STOP[@]} -eq 0 ]; then
-    echo -e "${GREEN}[INFO] Tidak ditemukan paket atau service PHP 5.x - 8.1 di sistem ini.${NC}"
-    echo "Sistem Anda sudah bersih dari PHP lama."
-    exit 0
+# Tampilkan ringkasan status base PHP
+if [ "$NEED_BASE_UPGRADE" = true ]; then
+    echo -e "${YELLOW}${BOLD}[!] Base PHP Sistem (/bin/php): PHP $CURRENT_BASE_PHP (< 8.2)${NC}"
+    echo -e "    -> Akan dialihkan dan di-upgrade ke ${GREEN}${BOLD}PHP 8.2 sebagai default${NC}"
+else
+    echo -e "${GREEN}[OK] Base PHP Sistem (/bin/php): PHP ${CURRENT_BASE_PHP:-Tidak terpasang} (>= 8.2)${NC}"
 fi
 
+# Tampilkan hasil deteksi paket lama
 if [ ${#SERVICES_TO_STOP[@]} -gt 0 ]; then
-    echo -e "\n${YELLOW}${BOLD}[!] Service PHP-FPM yang akan dihentikan & didisable:${NC}"
+    echo -e "\n${YELLOW}${BOLD}[!] Service PHP-FPM lama yang akan dihentikan & didisable:${NC}"
     for svc in "${SERVICES_TO_STOP[@]}"; do
         echo -e "    - $svc"
     done
 fi
 
 if [ ${#INSTALLED_PACKAGES[@]} -gt 0 ]; then
-    echo -e "\n${YELLOW}${BOLD}[!] Paket PHP (${#INSTALLED_PACKAGES[@]} paket) yang akan dihapus:${NC}"
+    echo -e "\n${YELLOW}${BOLD}[!] Paket PHP lama (${#INSTALLED_PACKAGES[@]} paket) yang akan dihapus:${NC}"
     for pkg in "${INSTALLED_PACKAGES[@]}"; do
         echo -e "    - $pkg"
     done
 fi
 
 if [ ${#DIRS_TO_CLEAN[@]} -gt 0 ]; then
-    echo -e "\n${YELLOW}${BOLD}[!] Direktori konfigurasi/data sisa yang akan dibersihkan:${NC}"
+    echo -e "\n${YELLOW}${BOLD}[!] Direktori sisa yang akan dibersihkan:${NC}"
     for d in "${DIRS_TO_CLEAN[@]}"; do
         echo -e "    - $d"
     done
+fi
+
+if [ "$NEED_BASE_UPGRADE" = false ] && [ ${#INSTALLED_PACKAGES[@]} -eq 0 ] && [ ${#SERVICES_TO_STOP[@]} -eq 0 ]; then
+    echo -e "\n${GREEN}[INFO] Sistem sudah menggunakan PHP >= 8.2 sebagai default dan tidak ada paket PHP lama (5.x - 8.1).${NC}"
+    exit 0
 fi
 
 echo -e "\n${CYAN}------------------------------------------------------------${NC}"
@@ -175,53 +205,89 @@ echo -e "\n${CYAN}------------------------------------------------------------${
 # Jika mode DRY RUN, keluar setelah menampilkan
 if [ "$DRY_RUN" = true ]; then
     echo -e "${YELLOW}${BOLD}[DRY RUN SELESAI]${NC} Tidak ada perubahan yang dilakukan pada sistem."
-    echo -e "Untuk menghapus paket-paket di atas secara nyata, jalankan: ${BOLD}$0${NC}"
+    echo -e "Untuk mengeksekusi secara nyata, jalankan: ${BOLD}$0${NC}"
     exit 0
 fi
 
 # Konfirmasi interaktif jika bukan dry run dan tanpa -y
 if [ "$AUTO_CONFIRM" = false ]; then
-    echo -e "${RED}${BOLD}PERINGATAN: Penghapusan paket bersifat permanen!${NC}"
-    echo -e "Pastikan tidak ada website yang masih bergantung pada versi PHP di atas."
-    read -rp "Apakah Anda yakin ingin melanjutkan penghapusan? (ketik 'yes' untuk lanjut): " CONFIRM
+    echo -e "${RED}${BOLD}PERINGATAN: Perubahan akan diterapkan pada sistem!${NC}"
+    read -rp "Apakah Anda yakin ingin melanjutkan? (ketik 'yes' untuk lanjut): " CONFIRM
     if [ "$CONFIRM" != "yes" ]; then
         echo -e "${BLUE}[BATAL] Proses dibatalkan oleh pengguna.${NC}"
         exit 0
     fi
 fi
 
-echo -e "\n${BLUE}[1/4] Menghentikan dan mendisable service PHP-FPM...${NC}"
-for svc in "${SERVICES_TO_STOP[@]}"; do
-    echo "    Menghentikan $svc..."
-    systemctl stop "$svc" 2>/dev/null || true
-    systemctl disable "$svc" 2>/dev/null || true
-done
-
-echo -e "\n${BLUE}[2/4] Menghapus paket PHP lama...${NC}"
-if [ "$OS_FAMILY" = "redhat" ]; then
-    PKG_MGR="dnf"
-    command -v dnf &>/dev/null || PKG_MGR="yum"
-    $PKG_MGR remove -y "${INSTALLED_PACKAGES[@]}"
-elif [ "$OS_FAMILY" = "debian" ]; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get purge -y "${INSTALLED_PACKAGES[@]}"
-    apt-get autoremove -y
+# 1. Hentikan Service PHP Lama
+if [ ${#SERVICES_TO_STOP[@]} -gt 0 ]; then
+    echo -e "\n${BLUE}[1/5] Menghentikan dan mendisable service PHP-FPM lama...${NC}"
+    for svc in "${SERVICES_TO_STOP[@]}"; do
+        echo "    Menghentikan $svc..."
+        systemctl stop "$svc" 2>/dev/null || true
+        systemctl disable "$svc" 2>/dev/null || true
+    done
 fi
 
-echo -e "\n${BLUE}[3/4] Membersihkan direktori sisa konfigurasi...${NC}"
-for d in "${DIRS_TO_CLEAN[@]}"; do
-    if [ -d "$d" ]; then
-        echo "    Menghapus direktori: $d"
-        rm -rf "$d"
+# 2. Upgrade Base PHP Sistem ke 8.2 jika masih < 8.2
+if [ "$NEED_BASE_UPGRADE" = true ]; then
+    echo -e "\n${BLUE}[2/5] Mengalihkan default base PHP (/bin/php) ke PHP 8.2...${NC}"
+    if [ "$OS_FAMILY" = "redhat" ]; then
+        if command -v dnf &>/dev/null; then
+            echo "    Mengaktifkan module stream php:remi-8.2..."
+            dnf module reset php -y || true
+            dnf module enable php:remi-8.2 -y
+            echo "    Memperbarui paket php sistem ke versi 8.2..."
+            dnf update -y "php*" || dnf distro-sync -y --allowerasing
+        fi
+    elif [ "$OS_FAMILY" = "debian" ]; then
+        echo "    Memastikan paket php8.2 terpasang..."
+        apt-get update -y
+        apt-get install -y php8.2 php8.2-cli php8.2-fpm php8.2-common
+        if command -v update-alternatives &>/dev/null; then
+            echo "    Mengatur update-alternatives ke php8.2..."
+            update-alternatives --set php /usr/bin/php8.2 2>/dev/null || true
+            update-alternatives --set phar /usr/bin/phar8.2 2>/dev/null || true
+            update-alternatives --set phar.phar /usr/bin/phar.phar8.2 2>/dev/null || true
+            update-alternatives --set phpize /usr/bin/phpize8.2 2>/dev/null || true
+            update-alternatives --set php-config /usr/bin/php-config8.2 2>/dev/null || true
+        fi
     fi
-done
+    echo -e "    ${GREEN}[OK] Base PHP sekarang: $(php -v 2>/dev/null | head -n1)${NC}"
+fi
 
-echo -e "\n${BLUE}[4/4] Memperbarui daftar versi PHP Virtualmin...${NC}"
+# 3. Hapus Paket PHP Lama Multi-Version
+if [ ${#INSTALLED_PACKAGES[@]} -gt 0 ]; then
+    echo -e "\n${BLUE}[3/5] Menghapus paket PHP lama (5.x - 8.1)...${NC}"
+    if [ "$OS_FAMILY" = "redhat" ]; then
+        PKG_MGR="dnf"
+        command -v dnf &>/dev/null || PKG_MGR="yum"
+        $PKG_MGR remove -y "${INSTALLED_PACKAGES[@]}"
+    elif [ "$OS_FAMILY" = "debian" ]; then
+        export DEBIAN_FRONTEND=noninteractive
+        apt-get purge -y "${INSTALLED_PACKAGES[@]}"
+        apt-get autoremove -y
+    fi
+fi
+
+# 4. Bersihkan Direktori Sisa
+if [ ${#DIRS_TO_CLEAN[@]} -gt 0 ]; then
+    echo -e "\n${BLUE}[4/5] Membersihkan direktori sisa konfigurasi...${NC}"
+    for d in "${DIRS_TO_CLEAN[@]}"; do
+        if [ -d "$d" ]; then
+            echo "    Menghapus direktori: $d"
+            rm -rf "$d"
+        fi
+    done
+fi
+
+# 5. Refresh Virtualmin
+echo -e "\n${BLUE}[5/5] Memperbarui daftar versi PHP Virtualmin...${NC}"
 if command -v virtualmin &>/dev/null; then
-    echo "    Memeriksa versi PHP yang tersisa di Virtualmin..."
+    echo "    Memeriksa versi PHP yang tersisa di Virtualmin:"
     virtualmin list-php-versions
 fi
 
 echo -e "\n${GREEN}============================================================${NC}"
-echo -e "${GREEN} SELESAI! Semua versi PHP 5.x - 8.1 telah berhasil dihapus.${NC}"
+echo -e "${GREEN} SELESAI! Default PHP sistem telah diatur ke 8.2 dan PHP lama telah dibersihkan.${NC}"
 echo -e "${GREEN}============================================================${NC}"
