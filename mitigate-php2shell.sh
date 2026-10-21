@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 #
 # Script Mitigasi php2shell (CVE-2026-109618 & CVE-2026-109619)
-# Mendukung Single PHP dan Multiple PHP (Remi SCL, Ubuntu/Debian PPA, cPanel, Plesk)
+# Mendukung Single PHP dan Multiple PHP:
+# - Format titik: 7.4, 8.0, 8.1, 8.2, 8.4 (Debian/Ubuntu, Ondrej PPA, dsb)
+# - Format angka: 74, 80, 81, 82, 84 (Remi SCL, cPanel, CloudLinux, dsb)
 #
 
 set -e
@@ -34,7 +36,7 @@ CONFIG_DIRS=()
 # a. Standar RHEL / AlmaLinux / CentOS / Fedora
 [ -d "/etc/php.d" ] && CONFIG_DIRS+=("/etc/php.d")
 
-# b. Remi Software Collections (Multiple PHP di RHEL/AlmaLinux)
+# b. Remi Software Collections (format php74, php80, php81, php82, php84)
 for d in /etc/opt/remi/php*/php.d; do
   [ -d "$d" ] && CONFIG_DIRS+=("$d")
 done
@@ -44,30 +46,33 @@ for d in /etc/opt/rh/rh-php*/php.d; do
   [ -d "$d" ] && CONFIG_DIRS+=("$d")
 done
 
-# d. Debian / Ubuntu / Ondrej PPA (cli, fpm, apache2 conf.d)
-for d in /etc/php/*/*/conf.d; do
+# d. Debian / Ubuntu / Ondrej PPA (format 7.4, 8.0, 8.1, 8.2, 8.4 - conf.d & mods-available)
+for d in /etc/php/*/*/conf.d /etc/php/*/mods-available; do
   [ -d "$d" ] && CONFIG_DIRS+=("$d")
 done
 
-# e. cPanel EasyApache 4
+# e. cPanel EasyApache 4 (ea-php74, ea-php81, ea-php82, dsb)
 for d in /opt/cpanel/ea-php*/root/etc/php.d; do
   [ -d "$d" ] && CONFIG_DIRS+=("$d")
 done
 
-# f. Plesk PHP
+# f. Plesk PHP (format php/7.4/etc/php.d, php/8.2/etc/php.d, dsb)
 for d in /opt/plesk/php/*/etc/php.d; do
   [ -d "$d" ] && CONFIG_DIRS+=("$d")
 done
 
+# Buang duplikat direktori jika ada
+UNIQUE_CONFIG_DIRS=($(printf "%s\n" "${CONFIG_DIRS[@]}" | sort -u))
+
 # Validasi apakah ada direktori yang ditemukan
-if [ ${#CONFIG_DIRS[@]} -eq 0 ]; then
+if [ ${#UNIQUE_CONFIG_DIRS[@]} -eq 0 ]; then
   echo -e "${RED}[ERROR] Tidak ditemukan direktori konfigurasi PHP di server ini!${NC}"
   exit 1
 fi
 
 echo -e "\n${YELLOW}[1/3] Menulis file konfigurasi mitigasi...${NC}"
 APPLIED_COUNT=0
-for dir in "${CONFIG_DIRS[@]}"; do
+for dir in "${UNIQUE_CONFIG_DIRS[@]}"; do
   target_file="$dir/$INI_FILENAME"
   echo "$INI_CONTENT" > "$target_file"
   chmod 644 "$target_file"
@@ -76,10 +81,15 @@ for dir in "${CONFIG_DIRS[@]}"; do
 done
 echo -e "${GREEN}Berhasil menerapkan konfigurasi ke $APPLIED_COUNT direktori PHP.${NC}"
 
+# Aktifkan via phpenmod jika sistem mendukung (khusus Debian/Ubuntu)
+if command -v phpenmod &>/dev/null; then
+  phpenmod 99-php2shell 2>/dev/null || true
+fi
+
 # 3. Restart / Reload service PHP dan Web Server yang AKTIF saja
 echo -e "\n${YELLOW}[2/3] Memeriksa dan me-reload service yang sedang berjalan...${NC}"
 
-# Pola nama service PHP-FPM dan Web Server
+# Mendukung service: php-fpm, php74-php-fpm, php7.4-fpm, php8.2-fpm, httpd, apache2, nginx, lsws
 SERVICES_PATTERN="php.*fpm|httpd|apache2|nginx|lsws"
 
 ACTIVE_SERVICES=$(systemctl list-units --type=service --state=running --no-legend 2>/dev/null \
@@ -102,19 +112,27 @@ fi
 # 4. Verifikasi Status Akhir
 echo -e "\n${YELLOW}[3/3] Memverifikasi status session.upload_progress.enabled...${NC}"
 
-# Kumpulkan semua binary PHP yang tersedia
 PHP_BINARIES=()
 
 # Binary default di PATH
 type -P php &>/dev/null && PHP_BINARIES+=("$(type -P php)")
 
-# Binary Remi SCL (php74, php80, php81, php82, php83, php84, dll)
-for b in $(compgen -c php 2>/dev/null | grep -E '^php[0-9]{2}$' | sort -u); do
+# Binary dalam PATH dengan format php74, php82 maupun format titik php7.4, php8.2
+for b in $(compgen -c php 2>/dev/null | grep -E '^php([0-9]{2}|[0-9]+\.[0-9]+)$' | sort -u); do
   type -P "$b" &>/dev/null && PHP_BINARIES+=("$(type -P "$b")")
 done
 
-# Binary cPanel / Plesk jika ada
-for b in /opt/cpanel/ea-php*/root/usr/bin/php /opt/plesk/php/*/bin/php; do
+# Pencarian langsung di path umum (Debian, Ubuntu, Remi, cPanel, Plesk)
+for b in /usr/bin/php \
+         /usr/bin/php[0-9][0-9] \
+         /usr/bin/php[0-9].[0-9] \
+         /usr/local/bin/php \
+         /usr/local/bin/php[0-9][0-9] \
+         /usr/local/bin/php[0-9].[0-9] \
+         /opt/cpanel/ea-php*/root/usr/bin/php \
+         /opt/plesk/php/*/bin/php \
+         /opt/remi/php*/root/usr/bin/php \
+         /opt/rh/rh-php*/root/usr/bin/php; do
   [ -x "$b" ] && PHP_BINARIES+=("$b")
 done
 
