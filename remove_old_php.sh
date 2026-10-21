@@ -216,10 +216,10 @@ for d in "${DIRS_TO_CLEAN[@]}"; do
     fi
 done
 
-echo -e "\n${BLUE}[4/4] Memperbarui deteksi konfigurasi Virtualmin...${NC}"
+echo -e "\n${BLUE}[4/4] Memperbarui daftar versi PHP Virtualmin...${NC}"
 if command -v virtualmin &>/dev/null; then
-    echo "    Menjalankan 'virtualmin check-config'..."
-    virtualmin check-config
+    echo "    Memeriksa versi PHP yang tersisa di Virtualmin..."
+    virtualmin list-php-versions
 fi
 
 echo -e "\n${GREEN}============================================================${NC}"
