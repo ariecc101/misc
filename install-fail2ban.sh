@@ -93,7 +93,7 @@ fi
 # Port SSH
 if [[ -z "$SSH_PORT" ]]; then
   if command -v sshd >/dev/null 2>&1; then
-    SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port /{print $2; exit}')"
+    SSH_PORT="$(sshd -T 2>/dev/null | awk '/^port /{p=$2} END{print p}' || true)"
   fi
   SSH_PORT="${SSH_PORT:-22}"
 fi
@@ -103,7 +103,7 @@ log "Port SSH: $SSH_PORT"
 if systemctl is-active --quiet firewalld 2>/dev/null; then
   BANACTION="firewallcmd-ipset"
   FW="firewalld"
-elif command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+elif command -v ufw >/dev/null 2>&1 && [[ "$(ufw status 2>/dev/null || true)" == *"Status: active"* ]]; then
   BANACTION="ufw"
   FW="ufw"
 elif command -v nft >/dev/null 2>&1; then
@@ -117,10 +117,20 @@ log "Firewall terdeteksi: $FW (banaction: $BANACTION)"
 
 # Whitelist: loopback + IP sesi SSH saat ini (supaya tidak mengunci diri sendiri)
 IGNORE="127.0.0.1/8 ::1"
+CLIENT_IP=""
 if [[ -n "${SSH_CONNECTION:-}" ]]; then
   CLIENT_IP="${SSH_CONNECTION%% *}"
+elif [[ -n "${SSH_CLIENT:-}" ]]; then
+  CLIENT_IP="${SSH_CLIENT%% *}"
+else
+  # sudo biasanya menghapus SSH_CONNECTION; fallback ke info login terminal
+  CLIENT_IP="$(who -m 2>/dev/null | sed -n 's/.*(\(.*\)).*/\1/p' || true)"
+fi
+if [[ "$CLIENT_IP" =~ ^[0-9a-fA-F:.]+$ ]]; then
   IGNORE="$IGNORE $CLIENT_IP"
   log "IP sesi SSH Anda ($CLIENT_IP) dimasukkan ke ignoreip."
+else
+  warn "IP sesi SSH tidak terdeteksi. Set IGNORE_IPS=\"IP_Anda\" agar tidak terkunci."
 fi
 [[ -n "$IGNORE_IPS" ]] && IGNORE="$IGNORE $IGNORE_IPS"
 
