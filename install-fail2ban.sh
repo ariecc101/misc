@@ -100,17 +100,24 @@ fi
 log "Port SSH: $SSH_PORT"
 
 # Backend firewall
-if systemctl is-active --quiet firewalld 2>/dev/null; then
-  BANACTION="firewallcmd-ipset"
-  FW="firewalld"
+# nftables dipilih lebih dulu: berjalan di semua distro target, efisien (pakai set),
+# dan tidak bergantung pada "direct rules" firewalld yang sudah DIHAPUS di
+# firewalld 2.x (AlmaLinux/RHEL 10) sehingga firewallcmd-ipset gagal total.
+if command -v nft >/dev/null 2>&1; then
+  BANACTION="nftables-multiport"
+  BANACTION_ALL="nftables-allports"
+  FW="nftables"
+elif systemctl is-active --quiet firewalld 2>/dev/null; then
+  BANACTION="firewallcmd-rich-rules"
+  BANACTION_ALL="firewallcmd-rich-rules"
+  FW="firewalld (rich rules)"
 elif command -v ufw >/dev/null 2>&1 && [[ "$(ufw status 2>/dev/null || true)" == *"Status: active"* ]]; then
   BANACTION="ufw"
+  BANACTION_ALL="ufw"
   FW="ufw"
-elif command -v nft >/dev/null 2>&1; then
-  BANACTION="nftables-multiport"
-  FW="nftables"
 else
   BANACTION="iptables-multiport"
+  BANACTION_ALL="iptables-allports"
   FW="iptables"
 fi
 log "Firewall terdeteksi: $FW (banaction: $BANACTION)"
@@ -151,7 +158,7 @@ findtime  = ${FINDTIME}
 maxretry  = ${MAXRETRY}
 backend   = systemd
 banaction = ${BANACTION}
-banaction_allports = ${BANACTION}
+banaction_allports = ${BANACTION_ALL}
 
 # Ban IP berulang dengan durasi makin lama
 bantime.increment = true
