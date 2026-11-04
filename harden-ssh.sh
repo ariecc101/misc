@@ -137,6 +137,9 @@ eff="$("$SSHD" -T -C user=root,host=localhost,addr=127.0.0.1 2>/dev/null)"
 check() {
   local key="$1" want="$2" got
   got="$(awk -v k="$key" 'tolower($1)==k{print $2; exit}' <<<"$eff")"
+  # sshd -T menampilkan 'without-password' (alias lama) untuk prohibit-password
+  # pada beberapa versi OpenSSH; keduanya identik.
+  [[ "$got" == "without-password" ]] && got="prohibit-password"
   if [[ "$got" != "$want" ]]; then
     rm -f "$DROPIN"
     die "Nilai efektif '$key' = '$got' (diharapkan '$want'). Ada konfigurasi lain yang menimpa. Drop-in dibatalkan."
