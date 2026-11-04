@@ -39,10 +39,13 @@ case "$ROOT_LOGIN" in
 esac
 
 # Nama service: ssh (Debian/Ubuntu) atau sshd (RHEL-family)
-if systemctl list-unit-files 2>/dev/null | grep -q '^sshd\.service'; then
+# (tanpa pipe ke grep -q: dengan 'set -o pipefail' itu bisa gagal karena SIGPIPE)
+if systemctl cat sshd.service >/dev/null 2>&1; then
   SVC="sshd"
-else
+elif systemctl cat ssh.service >/dev/null 2>&1; then
   SVC="ssh"
+else
+  die "Unit service SSH (sshd.service / ssh.service) tidak ditemukan."
 fi
 
 # ------------------------------------------------- cek anti-lockout
@@ -75,7 +78,8 @@ if ! grep -Eqi '^\s*Include\s+/etc/ssh/sshd_config\.d/\*\.conf' "$MAIN_CONF"; th
 fi
 
 # Nama opsi keyboard-interactive berbeda antar versi OpenSSH
-if "$SSHD" -T 2>/dev/null | grep -qi '^kbdinteractiveauthentication'; then
+sshd_dump="$("$SSHD" -T 2>/dev/null || true)"
+if grep -qi '^kbdinteractiveauthentication' <<<"$sshd_dump"; then
   KBD_OPT="KbdInteractiveAuthentication"
 else
   KBD_OPT="ChallengeResponseAuthentication"
